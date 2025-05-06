@@ -300,11 +300,13 @@ if __name__ == "__main__":
                 out_path = f"pred_e/{model_name}/{dataset}-full.jsonl"
         else:
             data = load_dataset("THUDM/LongBench", dataset, split="test")
-            if not os.path.exists(f"pred/{model_name}"):
-                os.makedirs(f"pred/{model_name}")
             if args.quest:
-                out_path = f"pred/{model_name}/{dataset}-{args.token_budget}.jsonl"
+                if not os.path.exists(f"pred/{model_name}/{dataset}-{args.token_budget}"):
+                    os.makedirs(f"pred/{model_name}/{dataset}-{args.token_budget}")
+                out_path = f"pred/{model_name}/{dataset}-{args.token_budget}/{args.chunk_size}.jsonl"
             else:
+                if not os.path.exists(f"pred/{model_name}"):
+                    os.makedirs(f"pred/{model_name}")
                 out_path = f"pred/{model_name}/{dataset}-full.jsonl"
         prompt_format = dataset2prompt[dataset]
         max_gen = dataset2maxlen[dataset]
