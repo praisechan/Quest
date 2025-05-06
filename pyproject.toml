@@ -10,10 +10,8 @@ dependencies = [
     "torch==2.5.0",
     "torchaudio==2.5.0",
     "torchvision==0.20.0",
-    "transformers==4.45.2",
     "accelerate==1.0.1",
     "sentencepiece==0.2.0",
-    "datasets==3.0.1",
     "wandb==0.18.5",
     "zstandard==0.23.0",
     "matplotlib==3.9.2",
@@ -24,7 +22,6 @@ dependencies = [
     "einops==0.8.0",
     "pandas==2.2.3",
     "fastchat==0.1.0",
-    "numpy==2.1.2"
 ]
 
 [tool.setuptools.packages.find]
