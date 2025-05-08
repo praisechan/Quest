@@ -1,19 +1,31 @@
-import torch
-from tqdm import tqdm
-import os
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 from torch.nn import CrossEntropyLoss
 
-import argparse
-from argparse import ArgumentParser
-
 device = "cuda"
 
-import torch
 from MagicDec.Engine.SnapKV.model import Transformer
 from MagicDec.Engine.utils import load_model_snapKV
 import flashinfer
+
+import os
+from datasets import load_dataset
+import torch
+import json
+from transformers import (
+    AutoTokenizer,
+    AutoConfig,
+    LlamaTokenizer,
+    LlamaForCausalLM,
+    AutoModelForCausalLM,
+)
+from tqdm import tqdm
+import numpy as np
+import random
+import argparse
+from evaluation.quest_attention import enable_quest_attention_eval
+from evaluation.llama import enable_tuple_kv_cache_for_llama 
+from evaluation.mistral import enable_tuple_kv_cache_for_mistral
+
 
 class LMBackend:
     def __init__(self, dtype = torch.bfloat16, device: str = "cuda:0", dec_len: int = 1, draft_dec_len: int = None) -> None:
@@ -29,10 +41,64 @@ class LMBackend:
             self.draft_cachelens = None
             self.model_forward = lambda model, x, input_pos, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen, draft_kv_page_indices, draft_kv_page_indptr, draft_kv_page_lastlen: model.verify(x, input_pos, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen, draft_kv_page_indices, draft_kv_page_indptr, draft_kv_page_lastlen)
             self.draft_forward = lambda model, x, input_pos, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen: model.draft_forward(x, input_pos, kv_append_indptr, kv_page_indices, kv_page_indptr, kv_page_lastlen)
+        
+        # for Quest
+        self.draft_past_key_values = None
+        self.input_tokens = None
+        self.draft_cachelength = 0
 
     def load_model(self, checkpoints: str, use_tp: bool, rank_group=None, group = None):
         self.model: Transformer = load_model_snapKV(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp=use_tp, rank_group=rank_group, group=group)        
 
+    def load_draft_model(self, model_path: str, draft_budget, chunk_size, bsz, max_len):
+        self.model_path = model_path
+        self.input_tokens = torch.zeros(bsz, max_len+1, device="cuda").long()
+        args = argparse.Namespace(
+            quest=True,
+            token_budget=draft_budget,
+            chunk_size=chunk_size,
+        )
+                
+        def load_model_and_tokenizer(model_path):
+            if 'llama' in model_path.lower() or 'longchat' in model_path.lower():
+                enable_tuple_kv_cache_for_llama()
+            if 'mistral' in model_path.lower():
+                enable_tuple_kv_cache_for_mistral()
+                
+            tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map="auto"
+            )
+            model = model.eval()
+
+            enable_quest_attention_eval(model, args)
+
+            return model, tokenizer
+        
+        # def load(model_path):
+        #     print(f"Loading model from {model_path} ...")
+        #     # however, tensor parallel for running falcon will occur bugs
+        #     tokenizer = AutoTokenizer.from_pretrained(
+        #         model_path,
+        #         trust_remote_code=True,
+        #     )
+        #     model = AutoModelForCausalLM.from_pretrained(
+        #         model_path,
+        #         device_map="auto",
+        #         torch_dtype=torch.float16,
+        #         trust_remote_code=True,
+        #     )
+        #     if tokenizer.pad_token_id is None:
+        #         if tokenizer.eos_token_id is not None:
+        #             tokenizer.pad_token_id = tokenizer.eos_token_id
+        #         else:
+        #             tokenizer.pad_token_id = 0
+
+        #     model.eval()
+        #     return model, tokenizer
+
+        self.draft_model, self.draft_tokenizer = load_model_and_tokenizer(self.model_path)
+        
     @torch.inference_mode()
     def setup_caches(self, max_batch_size: int = 1, max_seq_length: int = 2048, draft_budget = 0, window_size = 32):
         self.max_length = max_seq_length
@@ -209,76 +275,33 @@ class LMBackend:
             )
     
     @torch.inference_mode()
-    # def speculate(self, input_ids: torch.LongTensor, benchmark = False):
-    #         dec_len = input_ids.shape[1]
-    #         self.pre_spec(dec_len=dec_len)
-    #         logits = self.draft_forward(
-    #             model=self.model, 
-    #             x=input_ids,
-    #             input_pos=self.draft_cachelens, 
-    #             kv_append_indptr = self.qo_indptr*dec_len, kv_page_indices = self.draft_paged_kv_indices, kv_page_indptr= self.draft_paged_kv_indptr, kv_page_lastlen = self.draft_paged_kv_last_page_len)
-            
-    #         self.draft_cachelens += dec_len
-    #         if benchmark:
-    #             # If benchmarking the latency, don't update the cachelens and page table
-    #             self.draft_cachelens -= dec_len
-    #             self.draft_paged_kv_last_page_len -= dec_len
-    #         return logits
-    
-    def speculate(self, input_ids: torch.LongTensor, past_key_values, benchmark = False):
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--model_name_or_path", type=str)
-        parser.add_argument("--fixed-length", type=int)
-        parser.add_argument("--max-tokens", type=int, default=8192)
-        parser.add_argument("--min-tokens", type=int, default=256)
-        parser.add_argument("--tokens-step", type=int)
-        parser.add_argument("--length-step", type=int, default=128)
-        parser.add_argument("--iterations", type=int, default=20)
-        parser.add_argument("--output_dir", type=str)
-
-        parser.add_argument("--num_eval_tokens", type=int, default=None)
-
-        parser.add_argument("--quest", action="store_true", help="Enable quest attention")
-        parser.add_argument("--token_budget", type=int, default=1024)
-        parser.add_argument("--chunk_size", type=int, default=16)
-
-        def load(model_name_or_path):
-            print(f"Loading model from {model_name_or_path} ...")
-            # however, tensor parallel for running falcon will occur bugs
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_name_or_path,
-                trust_remote_code=True,
-            )
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name_or_path,
-                device_map="auto",
-                torch_dtype=torch.float16,
-                trust_remote_code=True,
-            )
-            if tokenizer.pad_token_id is None:
-                if tokenizer.eos_token_id is not None:
-                    tokenizer.pad_token_id = tokenizer.eos_token_id
-                else:
-                    tokenizer.pad_token_id = 0
-
-            model.eval()
-            return model, tokenizer
-
-        args = parser.parse_args()
-        model_name_or_path = None
-        draft_model, tokenizer = load(model_name_or_path)
-
-        from evaluation.quest_attention import enable_quest_attention_eval
-
-        enable_quest_attention_eval(draft_model, args)
-        outputs = draft_model(
+    def speculate(self, input_ids: torch.LongTensor, bsz, gamma, benchmark = False):
+      tokens_buffer= torch.zeros((bsz, gamma), device="cuda").long()
+      for i in range(gamma):
+        outputs = self.draft_model(
             input_ids,
-            past_key_values=past_key_values,
+            past_key_values=self.draft_past_key_values,
             use_cache=True,
         )
-        token_id = torch.argmax(outputs.logits, dim=-1)
+        
+        tokens_buffer[:, i:i+1] = torch.argmax(outputs.logits, dim=-1)
+        self.draft_past_key_values = outputs.past_key_values
 
-        return token_id, outputs.past_key_values
+      self.draft_past_key_values = None
+      
+      return tokens_buffer
+    
+    @torch.inference_mode()
+    def draft_kv_update(self, input_ids: torch.LongTensor):
+        input_from_prefill = torch.concat((self.input_tokens[:, :self.draft_cachelength], input_ids), dim=1)
+        outputs = self.draft_model(
+            input_from_prefill,
+            past_key_values=None,
+            use_cache=True,
+        )
+        self.draft_cachelength += input_ids.shape[1]
+        self.input_tokens[:,:self.draft_cachelength] = input_from_prefill
+        self.draft_past_key_values = outputs.past_key_values
     
     def pre_spec(self, dec_len):
             self.draft_paged_kv_last_page_len += dec_len
@@ -331,6 +354,17 @@ class LMBackend:
             
         if self.is_spec:
             self.draft_cachelens.copy_(self.cachelens)
+        
+        # for Quest
+        outputs = self.draft_model(
+            input_ids,
+            past_key_values=None,
+            use_cache=True,
+        )
+        self.draft_past_key_values = outputs.past_key_values
+        self.use_verified_kv = True
+        self.input_tokens[:,:input_ids.shape[1]] = input_ids
+        self.draft_cachelength = input_ids.shape[1]
         
         return logits
     

@@ -34,6 +34,7 @@ def parse_args(args=None):
             "chatglm3-6b-32k",
             "vicuna-v1.5-7b-16k",
             "Mistral-7B-Instruct-v0.3",
+            "Meta-Llama-3.1-8B",
             "Meta-Llama-3.1-8B-Instruct",
         ],
     )
@@ -169,6 +170,7 @@ def get_pred(
             )[0]
         else:
             with torch.no_grad():
+                breakpoint()
                 output = model(
                     input_ids=input.input_ids,
                     past_key_values=None,

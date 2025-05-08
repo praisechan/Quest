@@ -1,6 +1,7 @@
 cd evaluation/LongBench
 
-model="longchat-v1.5-7b-32k"
+# model="longchat-v1.5-7b-32k"
+model="Meta-Llama-3.1-8B"
 
 # python -u pred.py \
 #     --model $model --task qasper
