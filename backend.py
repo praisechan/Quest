@@ -50,7 +50,7 @@ class LMBackend_Quest:
     def load_model(self, checkpoints: str, use_tp: bool, rank_group=None, group = None):
         self.model: Transformer = load_model_snapKV(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp=use_tp, rank_group=rank_group, group=group)        
 
-    def load_draft_model(self, model_path: str, draft_budget, chunk_size, bsz, max_len, latest_k):
+    def load_draft_model(self, model_path: str, draft_budget, chunk_size, bsz, max_len, latest_k=0):
         self.model_path = model_path
         self.input_tokens = torch.zeros(bsz, max_len+1, device="cuda").long()
         args = argparse.Namespace(
