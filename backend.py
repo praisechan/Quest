@@ -27,7 +27,7 @@ from evaluation.llama import enable_tuple_kv_cache_for_llama
 from evaluation.mistral import enable_tuple_kv_cache_for_mistral
 
 
-class LMBackend:
+class LMBackend_Quest:
     def __init__(self, dtype = torch.bfloat16, device: str = "cuda:0", dec_len: int = 1, draft_dec_len: int = None) -> None:
         self.dtype = dtype
         self.device = device
@@ -50,13 +50,14 @@ class LMBackend:
     def load_model(self, checkpoints: str, use_tp: bool, rank_group=None, group = None):
         self.model: Transformer = load_model_snapKV(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp=use_tp, rank_group=rank_group, group=group)        
 
-    def load_draft_model(self, model_path: str, draft_budget, chunk_size, bsz, max_len):
+    def load_draft_model(self, model_path: str, draft_budget, chunk_size, bsz, max_len, latest_k):
         self.model_path = model_path
         self.input_tokens = torch.zeros(bsz, max_len+1, device="cuda").long()
         args = argparse.Namespace(
             quest=True,
             token_budget=draft_budget,
             chunk_size=chunk_size,
+            latest_k=latest_k
         )
                 
         def load_model_and_tokenizer(model_path):

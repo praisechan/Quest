@@ -9,7 +9,8 @@ from torch import nn
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding, apply_rotary_pos_emb, repeat_kv
 
-import quest.utils
+# import quest.utils
+import utils
 
 class QuestAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
@@ -64,6 +65,7 @@ class QuestAttention(nn.Module):
         iController: Optional[quest.utils.InferenceController] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
+        breakpoint()
 
         assert bsz == 1, "QuestAttention only supports batch size 1."
         assert hasattr(self, 'layer_idx'), "QuestAttention requires layer_idx to inference."

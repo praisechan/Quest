@@ -2,11 +2,16 @@ import torch
 import math
 from typing import Optional
 
-import quest._kernels as _kernels
-from quest.utils.utils import TensorLayout
-from quest.utils.kv_cache import KvCache
-from quest.utils.controller import InferenceController
-from quest.utils.decode_wrapper import BatchDecodeWithPagedKVCacheWrapper
+# import quest._kernels as _kernels
+# from quest.utils.utils import TensorLayout
+# from quest.utils.kv_cache import KvCache
+# from quest.utils.controller import InferenceController
+# from quest.utils.decode_wrapper import BatchDecodeWithPagedKVCacheWrapper
+import _kernels as _kernels
+from utils.utils import TensorLayout
+from utils.kv_cache import KvCache
+from utils.controller import InferenceController
+from utils.decode_wrapper import BatchDecodeWithPagedKVCacheWrapper
 
 __all__ = [
     'TensorLayout',
@@ -261,6 +266,7 @@ def decode_sparse_attn(
         layer_idx: Layer index of the KV cache.
         topk_indices: Shape: `[N, page_budget-1]`. Top-k indices.
     """
+    breakpoint()
     o = torch.empty_like(q, dtype=q.dtype, device=q.device)
     iController._decode_handler.forward(
         q,

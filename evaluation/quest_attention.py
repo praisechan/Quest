@@ -20,7 +20,159 @@ from transformers.cache_utils import DynamicCache
 
 from transformers.models.mistral.modeling_mistral import MistralAttention
 
-def local_heavy_hitter_mask(attn_weights, token_budget, chunk_size):
+def local_heavy_hitter_mask_chunk_manner(attn_weights, token_budget, chunk_size, latest_chunks: int = 0):
+
+    # expend attn_weights to be divisible by chunk_size
+    seq_length = attn_weights.shape[-1]
+    padding_length = chunk_size - ((seq_length - 1) % chunk_size + 1)
+    attn_weights = torch.cat(
+        [
+            attn_weights,
+            torch.ones(
+                (
+                    attn_weights.shape[0],
+                    attn_weights.shape[1],
+                    attn_weights.shape[2],
+                    padding_length,
+                ),
+                device=attn_weights.device,
+            )
+            * torch.tensor(torch.finfo(attn_weights.dtype).min),
+        ],
+        dim=-1,
+    )
+
+    # chunk attn_weights into chunk_size tokens
+    chunk_attn_weights = attn_weights.reshape(
+        attn_weights.shape[0],
+        attn_weights.shape[1],
+        attn_weights.shape[2],
+        attn_weights.shape[3] // chunk_size,
+        chunk_size,
+    ).amax(dim=-1)
+
+    # ── figure out how many chunks to pick by heavy-hitter ──
+    total_chunks       = chunk_attn_weights.size(-1)
+    chunk_budget       = token_budget // chunk_size
+    # clamp reserved to at most total_chunks
+    reserved_chunks    = min(latest_chunks, total_chunks)
+    # remaining slots for heavy hitters
+    hh_chunk_budget    = max(chunk_budget - reserved_chunks, 0)
+    # pick exactly hh_chunk_budget (no extra min-3 rule, to honor total budget)
+    hh_chunk_budget    = min(hh_chunk_budget, total_chunks - reserved_chunks)
+
+    if hh_chunk_budget > 0:
+        _, topk = chunk_attn_weights.topk(
+            k=hh_chunk_budget, dim=-1
+        )
+    else:
+        # no heavy hitters if budget zero
+        topk = None
+    
+    mask_bottom = torch.zeros_like(attn_weights, dtype=torch.bool)
+    if topk is not None:
+        topk_tokens = (
+            topk.unsqueeze(-1)
+                .repeat(1, 1, 1, 1, chunk_size)
+                * chunk_size
+            + torch.arange(chunk_size, device=attn_weights.device)
+        ).reshape(attn_weights.shape[0], attn_weights.shape[1], attn_weights.shape[2], -1)
+        mask_bottom.scatter_(-1, topk_tokens, True)
+
+    # remove the padding
+    mask_bottom = mask_bottom[:, :, :, :seq_length]
+    
+    # ── now reserve the *last* `reserved_chunks` chunks ──
+    if reserved_chunks > 0:
+        # how many tokens to reserve
+        n_reserve = reserved_chunks * chunk_size
+        n_reserve = min(n_reserve, seq_length)
+        last_idxs = torch.arange(
+            seq_length - n_reserve, seq_length, device=mask_bottom.device
+        )
+        mask_bottom[..., last_idxs] = True    
+    
+
+    return mask_bottom
+
+def local_heavy_hitter_mask_token_manner(attn_weights, token_budget, chunk_size, latest_k: int = 0):
+    # attn_weights (BS, head, query, keys)
+
+    # expend attn_weights to be divisible by chunk_size
+    seq_length = attn_weights.shape[-1]
+    padding_length = chunk_size - ((seq_length - 1) % chunk_size + 1)
+    attn_weights = torch.cat(
+        [
+            attn_weights,
+            torch.ones(
+                (
+                    attn_weights.shape[0],
+                    attn_weights.shape[1],
+                    attn_weights.shape[2],
+                    padding_length,
+                ),
+                device=attn_weights.device,
+            )
+            * torch.tensor(torch.finfo(attn_weights.dtype).min),
+        ],
+        dim=-1,
+    )
+
+    # chunk attn_weights into chunk_size tokens
+    chunk_attn_weights = attn_weights.reshape(
+        attn_weights.shape[0],
+        attn_weights.shape[1],
+        attn_weights.shape[2],
+        attn_weights.shape[3] // chunk_size,
+        chunk_size,
+    ).amax(dim=-1)
+
+    _, topk = chunk_attn_weights.topk(
+        k=min(max(3, token_budget // chunk_size), chunk_attn_weights.size(-1)), dim=-1
+    )
+
+    # 1) figure out how many tokens we need from the “old” heavy hitters
+    k_latest   = min(latest_k, token_budget)
+    hh_budget  = token_budget - k_latest
+
+    # 2) turn hh_budget into a number of chunks
+    if hh_budget > 0:
+        num_pages     = chunk_attn_weights.size(-1)
+        pages_to_take = (hh_budget + chunk_size - 1) // chunk_size
+        pages_to_take = min(pages_to_take, num_pages)
+        _, topk = chunk_attn_weights.topk(k=pages_to_take, dim=-1)
+    else:
+        # no heavy hitters if budget used up by latest_k
+        topk = torch.empty(
+            attn_weights.shape[0],
+            attn_weights.shape[1],
+            attn_weights.shape[2],
+            0,
+            dtype=torch.long,
+            device=attn_weights.device,
+        )
+
+    # repeat topk chunk_size times and recover the original indexes (* chunk_size + arange(chunk_size))
+    topk = topk.unsqueeze(-1).repeat(
+        1, 1, 1, 1, chunk_size
+    ) * chunk_size + torch.arange(chunk_size, device=topk.device)
+    topk = topk.reshape(topk.shape[0], topk.shape[1], topk.shape[2], -1)
+    mask_bottom = torch.zeros_like(attn_weights, dtype=torch.bool)
+    mask_bottom.scatter_(-1, topk, True)
+
+    # remove the padding
+    mask_bottom = mask_bottom[:, :, :, :seq_length]
+
+    # 3) force-enable the last `k_latest` tokens
+    if k_latest > 0:
+        last_idxs = torch.arange(seq_length - k_latest, seq_length, device=mask_bottom.device)
+        # this auto-broadcasts over batch/head/query dims:
+        mask_bottom[..., last_idxs] = True
+
+    return mask_bottom
+
+
+def local_heavy_hitter_mask_original(attn_weights, token_budget, chunk_size):
     # attn_weights (BS, head, query, keys)
 
     # expend attn_weights to be divisible by chunk_size
@@ -67,7 +219,6 @@ def local_heavy_hitter_mask(attn_weights, token_budget, chunk_size):
     mask_bottom = mask_bottom[:, :, :, :seq_length]
 
     return mask_bottom
-
 
 def forward(
     self,
@@ -208,9 +359,12 @@ def forward(
     attn_weights_for_selection = quantized_weight
 
     if token_budget > 0:
-        mask_bottom = local_heavy_hitter_mask(
-            attn_weights_for_selection, token_budget, self.chunk_size
+        mask_bottom = local_heavy_hitter_mask_token_manner(
+            attn_weights_for_selection, token_budget, self.chunk_size, self.latest_k
         )  # Default: No padding applied to input
+        # mask_bottom = local_heavy_hitter_mask(
+        #     attn_weights_for_selection, token_budget, self.chunk_size
+        # )  # Default: No padding applied to input
     else:
         mask_bottom = torch.zeros_like(attn_weights_for_selection, dtype=torch.bool)
 
@@ -264,3 +418,4 @@ def enable_quest_attention_eval(model, args):
 
             model._modules[name].token_budget = args.token_budget
             model._modules[name].chunk_size = args.chunk_size
+            model._modules[name].latest_k = args.latest_k
