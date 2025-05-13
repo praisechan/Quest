@@ -250,6 +250,7 @@ def old_llama_for_causal_lm_forward(
     output_attentions: Optional[bool] = None,
     output_hidden_states: Optional[bool] = None,
     return_dict: Optional[bool] = None,
+    output_all_token:  Optional[bool] = False,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
     output_attentions = (
         output_attentions
@@ -280,11 +281,14 @@ def old_llama_for_causal_lm_forward(
 
     hidden_states = outputs[0]
 
-    logits = self.lm_head(hidden_states)
     # if self.training:
     #     logits = self.lm_head(hidden_states)
     # else:
     #     logits = self.lm_head(hidden_states[:, -1:, :])
+    if output_all_token:
+        logits = self.lm_head(hidden_states)
+    else:
+        logits = self.lm_head(hidden_states[:, -1:, :])      
 
     logits = logits.float()
 
@@ -504,3 +508,4 @@ def enable_tuple_kv_cache_for_llama():
     transformers.models.llama.modeling_llama.LlamaAttention._upad_input = _upad_input
     transformers.models.llama.modeling_llama.LlamaAttention._flash_attention_forward = _flash_attention_forward
     transformers.models.llama.modeling_llama.LlamaForCausalLM.forward = old_llama_for_causal_lm_forward
+    

@@ -106,6 +106,7 @@ class LMBackend_Quest:
                 input_ids,
                 past_key_values=self.draft_past_key_values,
                 use_cache=True,
+                output_all_token=True
             )
             
             self.cachelens += dec_len
