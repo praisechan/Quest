@@ -280,10 +280,11 @@ def old_llama_for_causal_lm_forward(
 
     hidden_states = outputs[0]
 
-    if self.training:
-        logits = self.lm_head(hidden_states)
-    else:
-        logits = self.lm_head(hidden_states[:, -1:, :])
+    logits = self.lm_head(hidden_states)
+    # if self.training:
+    #     logits = self.lm_head(hidden_states)
+    # else:
+    #     logits = self.lm_head(hidden_states[:, -1:, :])
 
     logits = logits.float()
 

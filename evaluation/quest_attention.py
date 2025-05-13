@@ -360,9 +360,11 @@ def forward(
 
     if token_budget > 0:
         mask_bottom = local_heavy_hitter_mask_original(
-        # mask_bottom = local_heavy_hitter_mask_token_manner(
-            attn_weights_for_selection, token_budget, self.chunk_size, self.latest_k
+        attn_weights_for_selection, token_budget, self.chunk_size
         )  # Default: No padding applied to input
+        # mask_bottom = local_heavy_hitter_mask_token_manner(
+        #     attn_weights_for_selection, token_budget, self.chunk_size, self.latest_k
+        # )  # Default: No padding applied to input
         # mask_bottom = local_heavy_hitter_mask(
         #     attn_weights_for_selection, token_budget, self.chunk_size
         # )  # Default: No padding applied to input
