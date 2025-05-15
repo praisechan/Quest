@@ -46,7 +46,7 @@ class LMBackend_Quest:
         # for Quest
         self.draft_past_key_values = None
         self.input_tokens = None
-        self.draft_cachelength = 0
+        self.verified_cachelength = 0
 
     # def load_model(self, checkpoints: str, use_tp: bool, rank_group=None, group = None):
     #     self.model: Transformer = load_model_snapKV(checkpoint_path=checkpoints, device=self.device, precision=self.dtype, use_tp=use_tp, rank_group=rank_group, group=group)        
@@ -136,14 +136,14 @@ class LMBackend_Quest:
     
     @torch.inference_mode()
     def draft_kv_update(self, input_ids: torch.LongTensor):
-        input_from_prefill = torch.concat((self.input_tokens[:, :self.draft_cachelength], input_ids), dim=1)
+        input_from_prefill = torch.concat((self.input_tokens[:, :self.verified_cachelength], input_ids), dim=1)
         outputs = self.draft_model(
             input_from_prefill,
             past_key_values=None,
             use_cache=True,
         )
-        self.draft_cachelength += input_ids.shape[1]
-        self.input_tokens[:,:self.draft_cachelength] = input_from_prefill
+        self.verified_cachelength += input_ids.shape[1]
+        self.input_tokens[:,:self.verified_cachelength] = input_from_prefill
         self.draft_past_key_values = outputs.past_key_values
 
     @torch.inference_mode()
@@ -157,7 +157,7 @@ class LMBackend_Quest:
         self.draft_past_key_values = outputs.past_key_values
         self.use_verified_kv = True
         self.input_tokens[:,:input_ids.shape[1]] = input_ids
-        self.draft_cachelength = input_ids.shape[1]
+        self.verified_cachelength = input_ids.shape[1]
         self.cachelens = input_ids.shape[1]
         
         return torch.argmax(outputs.logits, dim=-1)
